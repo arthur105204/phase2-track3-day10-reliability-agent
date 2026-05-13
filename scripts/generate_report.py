@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
 
@@ -34,6 +35,18 @@ def main() -> None:
     ]
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text("\n".join(lines))
+
+    csv_path = Path(args.out).with_name("metrics.csv")
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["metric", "value"])
+        for key, value in metrics.items():
+            if key == "scenarios":
+                continue
+            writer.writerow([key, value])
+        for key, value in metrics.get("scenarios", {}).items():
+            writer.writerow([f"scenario:{key}", value])
+
     print(f"wrote {args.out}")
 
 

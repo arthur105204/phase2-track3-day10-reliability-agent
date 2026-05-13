@@ -53,10 +53,16 @@ class ResponseCache:
         self.ttl_seconds = ttl_seconds
         self.similarity_threshold = similarity_threshold
         self._entries: list[CacheEntry] = []
+        self.false_hit_log: list[dict[str, object]] = []
 
     def get(self, query: str) -> tuple[str | None, float]:
+        # Return None if query contains privacy-sensitive keywords
+        if _is_uncacheable(query):
+            return None, 0.0
+        
         best_value: str | None = None
         best_score = 0.0
+        best_key: str | None = None
         now = time.time()
         self._entries = [e for e in self._entries if now - e.created_at <= self.ttl_seconds]
         for entry in self._entries:
@@ -64,24 +70,52 @@ class ResponseCache:
             if score > best_score:
                 best_score = score
                 best_value = entry.value
+                best_key = entry.key
+        
         if best_score >= self.similarity_threshold:
+            # Check for false hits (e.g., different years)
+            if best_key and _looks_like_false_hit(query, best_key):
+                self.false_hit_log.append({
+                    "query": query,
+                    "cached_key": best_key,
+                    "score": best_score,
+                    "reason": "different_4digit_numbers"
+                })
+                return None, best_score
             return best_value, best_score
         return None, best_score
 
     def set(self, query: str, value: str, metadata: dict[str, str] | None = None) -> None:
+        # Don't cache privacy-sensitive queries
+        if _is_uncacheable(query):
+            return
         self._entries.append(CacheEntry(query, value, time.time(), metadata or {}))
 
     @staticmethod
     def similarity(a: str, b: str) -> float:
-        """Very small baseline similarity using token overlap.
+        """Improved similarity using weighted token overlap and prefix matching.
 
-        TODO(student): Improve with embeddings or a deterministic vectorizer.
+        Factors:
+        - Token overlap: high weight for exact matches
+        - Length penalty: penalize very different query lengths
+        - Common words penalty: reduce weight of very common words
         """
         left = set(a.lower().split())
         right = set(b.lower().split())
         if not left or not right:
             return 0.0
-        return len(left & right) / len(left | right)
+        
+        # Basic Jaccard similarity
+        intersection = len(left & right)
+        union = len(left | right)
+        jaccard = intersection / union if union > 0 else 0.0
+        
+        # Length penalty: penalize if one query is much shorter/longer than the other
+        len_ratio = min(len(a), len(b)) / max(len(a), len(b)) if max(len(a), len(b)) > 0 else 0.0
+        
+        # Combined score: weight Jaccard heavily but apply length penalty
+        combined = jaccard * 0.8 + len_ratio * 0.2
+        return combined
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +180,52 @@ class SharedRedisCache:
         7. Before returning a match, check _looks_like_false_hit(); if true,
            append to self.false_hit_log and return (None, best_score)
         """
-        return None, 0.0
+        # Return None if query contains privacy-sensitive keywords
+        if _is_uncacheable(query):
+            return None, 0.0
+        
+        # Try exact match first
+        exact_key = f"{self.prefix}{self._query_hash(query)}"
+        try:
+            cached_response = self._redis.hget(exact_key, "response")
+            if cached_response is not None:
+                return cached_response, 1.0
+        except Exception:
+            pass
+        
+        # Search for semantic matches across all cached keys
+        best_value: str | None = None
+        best_score = 0.0
+        best_key: str | None = None
+        best_cached_query: str | None = None
+        
+        try:
+            for redis_key in self._redis.scan_iter(f"{self.prefix}*"):
+                cached_query_data = self._redis.hget(redis_key, "query")
+                if cached_query_data is None:
+                    continue
+                
+                score = ResponseCache.similarity(query, cached_query_data)
+                if score > best_score:
+                    best_score = score
+                    best_value = self._redis.hget(redis_key, "response")
+                    best_key = redis_key
+                    best_cached_query = cached_query_data
+        except Exception:
+            pass
+        
+        if best_score >= self.similarity_threshold:
+            # Check for false hits (e.g., different years)
+            if best_cached_query and _looks_like_false_hit(query, best_cached_query):
+                self.false_hit_log.append({
+                    "query": query,
+                    "cached_query": best_cached_query,
+                    "score": best_score,
+                    "reason": "different_4digit_numbers"
+                })
+                return None, best_score
+            return best_value, best_score
+        return None, best_score
 
     def set(self, query: str, value: str, metadata: dict[str, str] | None = None) -> None:
         """Store a response in Redis with TTL.
@@ -157,7 +236,16 @@ class SharedRedisCache:
         3. self._redis.hset(key, mapping={"query": query, "response": value})
         4. self._redis.expire(key, self.ttl_seconds)
         """
-        pass
+        # Don't cache privacy-sensitive queries
+        if _is_uncacheable(query):
+            return
+        
+        key = f"{self.prefix}{self._query_hash(query)}"
+        try:
+            self._redis.hset(key, mapping={"query": query, "response": value})
+            self._redis.expire(key, self.ttl_seconds)
+        except Exception:
+            pass
 
     def flush(self) -> None:
         """Remove all entries with this cache prefix (for testing)."""

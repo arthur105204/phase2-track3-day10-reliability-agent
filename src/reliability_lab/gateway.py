@@ -41,16 +41,26 @@ class ReliabilityGateway:
         if self.cache is not None:
             cached, score = self.cache.get(prompt)
             if cached is not None:
-                return GatewayResponse(cached, f"cache_hit:{score:.2f}", None, True, 0.0, 0.0)
+                return GatewayResponse(
+                    text=cached,
+                    route="cache_hit",
+                    provider=None,
+                    cache_hit=True,
+                    latency_ms=0.0,
+                    estimated_cost=0.0
+                )
 
         last_error: str | None = None
-        for provider in self.providers:
+        for i, provider in enumerate(self.providers):
             breaker = self.breakers[provider.name]
             try:
                 response: ProviderResponse = breaker.call(provider.complete, prompt)
                 if self.cache is not None:
                     self.cache.set(prompt, response.text, {"provider": provider.name})
-                route = "primary" if provider == self.providers[0] else "fallback"
+                
+                # Determine route: primary vs fallback
+                route = "primary" if i == 0 else "fallback"
+                
                 return GatewayResponse(
                     text=response.text,
                     route=route,
@@ -60,7 +70,7 @@ class ReliabilityGateway:
                     estimated_cost=response.estimated_cost,
                 )
             except (ProviderError, CircuitOpenError) as exc:
-                last_error = str(exc)
+                last_error = f"{provider.name}: {type(exc).__name__}"
                 continue
 
         return GatewayResponse(

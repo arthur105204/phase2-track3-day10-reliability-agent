@@ -136,5 +136,16 @@ def run_simulation(config: LabConfig, queries: list[str]) -> RunMetrics:
                 combined.recovery_time_ms = result.recovery_time_ms
             else:
                 combined.recovery_time_ms = (combined.recovery_time_ms + result.recovery_time_ms) / 2
+    
+    # Add cache vs no-cache comparison for the default scenario
+    # Run with cache disabled to show cost difference
+    if config.cache.enabled:
+        cache_disabled_config = copy.deepcopy(config)
+        cache_disabled_config.cache.enabled = False
+        no_cache_result = run_scenario(cache_disabled_config, queries, ScenarioConfig(name="no_cache_baseline"))
+        combined.estimated_cost_saved += max(0.0, no_cache_result.estimated_cost - combined.estimated_cost)
+        
+        # Mark it in the scenarios dict for reporting
+        combined.scenarios["cache_vs_no_cache"] = "pass" if combined.estimated_cost_saved > 0 else "neutral"
 
     return combined

@@ -1,0 +1,17 @@
+metric,value
+total_requests,300
+availability,0.99
+error_rate,0.01
+latency_p50_ms,272.68
+latency_p95_ms,314.49
+latency_p99_ms,320.17
+fallback_success_rate,0.9444
+cache_hit_rate,0.7433
+circuit_open_count,6
+recovery_time_ms,
+estimated_cost,0.030272
+estimated_cost_saved,0.242824
+scenario:primary_timeout_100,pass
+scenario:primary_flaky_50,pass
+scenario:all_healthy,pass
+scenario:cache_vs_no_cache,pass
